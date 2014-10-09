@@ -627,10 +627,24 @@ Tcl_ConditionWait(
 	 */
 
 	if (*condPtr == NULL) {
+#undef attr_p
+#if defined(_POSIX_TIMERS) && defined(_POSIX_MONOTONIC_CLOCK)
+#define attr_p (&attr)
+	    pthread_condattr_t attr;
+	    pthread_condattr_init(&attr);
+	    pthread_condattr_setclock(&attr,CLOCK_MONOTONIC);
+#else
+#define attr_p (NULL)
+#endif
 	    pcondPtr = (pthread_cond_t *) ckalloc(sizeof(pthread_cond_t));
-	    pthread_cond_init(pcondPtr, NULL);
-	    *condPtr = (Tcl_Condition)pcondPtr;
-	    TclRememberCondition(condPtr);
+	    pthread_cond_init(pcondPtr, attr_p);
+
+#if defined(_POSIX_TIMERS) && defined(_POSIX_MONOTONIC_CLOCK)
+	    pthread_condattr_destroy(&attr);
+#endif
+#undef attr_p
+ 	    *condPtr = (Tcl_Condition) pcondPtr;
+ 	    TclRememberCondition(condPtr);
 	}
 	MASTER_UNLOCK;
     }
@@ -639,17 +653,32 @@ Tcl_ConditionWait(
     if (timePtr == NULL) {
 	pthread_cond_wait(pcondPtr, pmutexPtr);
     } else {
-	Tcl_Time now;
-
 	/*
 	 * Make sure to take into account the microsecond component of the
 	 * current time, including possible overflow situations. [Bug #411603]
 	 */
 
+#if defined(_POSIX_TIMERS) && defined(_POSIX_MONOTONIC_CLOCK)
+	struct timespec pnow;
+	clock_gettime(CLOCK_MONOTONIC, &pnow);
+	ptime.tv_sec = timePtr->sec + pnow.tv_sec +
+	    (timePtr->usec + pnow.tv_nsec/1000) / 1000000;
+	ptime.tv_nsec = 1000 * ((timePtr->usec + pnow.tv_nsec/1000) % 1000000);
+
+#elif defined(_POSIX_TIMERS)
+	struct timespec pnow;
+	clock_gettime(CLOCK_REALTIME, &pnow);
+	ptime.tv_sec = timePtr->sec + pnow.tv_sec +
+	    (timePtr->usec + pnow.tv_nsec/1000) / 1000000;
+	ptime.tv_nsec = 1000 * ((timePtr->usec + pnow.tv_nsec/1000) % 1000000);
+
+#else
+	Tcl_Time now;
 	Tcl_GetTime(&now);
 	ptime.tv_sec = timePtr->sec + now.sec +
 	    (timePtr->usec + now.usec) / 1000000;
 	ptime.tv_nsec = 1000 * ((timePtr->usec + now.usec) % 1000000);
+#endif
 	pthread_cond_timedwait(pcondPtr, pmutexPtr, &ptime);
     }
 }
